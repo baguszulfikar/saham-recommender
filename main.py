@@ -607,6 +607,87 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
       {top3_cards}
     </div>
 
+    <div style="margin-top:28px;">
+      <h2 style="font-size:15px; color:#1a1a2e; margin-bottom:12px; padding-bottom:8px;
+                  border-bottom:2px solid #f0f0f0;">
+        📚 Panduan Metrik
+      </h2>
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr style="background:#f5f7fa;">
+            <th style="padding:8px 10px; text-align:left; color:#555; font-weight:600; width:14%;">Metrik</th>
+            <th style="padding:8px 10px; text-align:left; color:#555; font-weight:600; width:30%;">Penjelasan Singkat</th>
+            <th style="padding:8px 10px; text-align:left; color:#555; font-weight:600; width:20%;">Ideal (Non-Bank)</th>
+            <th style="padding:8px 10px; text-align:left; color:#555; font-weight:600; width:36%;">Baca Lebih Lanjut</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:8px 10px;"><strong>P/E Ratio</strong></td>
+            <td style="padding:8px 10px; color:#555;">Harga saham dibagi laba per saham (EPS). Mengukur seberapa mahal pasar menilai setiap rupiah laba.</td>
+            <td style="padding:8px 10px; color:#2196F3;">&lt; 15x (rata-rata IDX ~16x)</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/terms/p/price-earningsratio.asp" style="color:#0f3460; text-decoration:none;">Investopedia: P/E Ratio ↗</a><br>
+              <a href="https://id.investing.com/education/terms/price-to-earnings-ratio-pe-200249141" style="color:#0f3460; text-decoration:none;">Investing.com ID: P/E ↗</a>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f0f0f0; background:#fafafa;">
+            <td style="padding:8px 10px;"><strong>P/B Ratio</strong></td>
+            <td style="padding:8px 10px; color:#555;">Harga saham dibagi nilai buku (ekuitas) per saham. Di bawah 1x artinya harga lebih murah dari nilai aset bersih.</td>
+            <td style="padding:8px 10px; color:#2196F3;">&lt; 2x (non-bank)</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/terms/p/price-to-bookratio.asp" style="color:#0f3460; text-decoration:none;">Investopedia: P/B Ratio ↗</a><br>
+              <a href="https://www.idx.co.id/id/investor/pengetahuan-investasi/" style="color:#0f3460; text-decoration:none;">IDX: Pengetahuan Investasi ↗</a>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:8px 10px;"><strong>ROE</strong></td>
+            <td style="padding:8px 10px; color:#555;">Return on Equity — laba bersih dibagi ekuitas. Mengukur seberapa efisien perusahaan menghasilkan laba dari modal pemegang saham.</td>
+            <td style="padding:8px 10px; color:#4CAF50;">&gt; 15% (sangat baik)</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/terms/r/returnonequity.asp" style="color:#0f3460; text-decoration:none;">Investopedia: ROE ↗</a><br>
+              <a href="https://stockbit.com/post/10318736" style="color:#0f3460; text-decoration:none;">Stockbit: Cara Baca ROE ↗</a>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f0f0f0; background:#fafafa;">
+            <td style="padding:8px 10px;"><strong>D/E Ratio</strong></td>
+            <td style="padding:8px 10px; color:#555;">Debt-to-Equity — total utang dibagi ekuitas. Mengukur seberapa besar perusahaan bergantung pada utang untuk mendanai operasinya. Tidak berlaku untuk bank.</td>
+            <td style="padding:8px 10px; color:#2196F3;">&lt; 1.0x</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/terms/d/debtequityratio.asp" style="color:#0f3460; text-decoration:none;">Investopedia: D/E Ratio ↗</a>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:8px 10px;"><strong>EV/EBITDA</strong></td>
+            <td style="padding:8px 10px; color:#555;">Enterprise Value dibagi EBITDA. Lebih robust dari P/E karena memperhitungkan utang dan tidak terpengaruh pajak maupun depresiasi. Cocok untuk membandingkan perusahaan lintas sektor.</td>
+            <td style="padding:8px 10px; color:#2196F3;">&lt; 10x (sangat murah &lt;8x)</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/ask/answers/072715/what-considered-healthy-evebitda.asp" style="color:#0f3460; text-decoration:none;">Investopedia: EV/EBITDA ↗</a><br>
+              <a href="https://www.footnotesanalyst.com/relative-valuation-conflicts-ev-ebitda-versus-p-e/" style="color:#0f3460; text-decoration:none;">EV/EBITDA vs P/E ↗</a>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f0f0f0; background:#fafafa;">
+            <td style="padding:8px 10px;"><strong>FCF Yield</strong></td>
+            <td style="padding:8px 10px; color:#555;">Free Cash Flow Yield — arus kas bebas dibagi market cap. Mengukur berapa persen kas nyata yang dihasilkan relatif terhadap harga. Salah satu prediktor return jangka panjang terbaik.</td>
+            <td style="padding:8px 10px; color:#4CAF50;">&gt; 5% (sangat baik)</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/terms/f/freecashflow.asp" style="color:#0f3460; text-decoration:none;">Investopedia: Free Cash Flow ↗</a><br>
+              <a href="https://www.quant-investing.com/blog/top-free-cash-flow-yield-stocks-for-2025" style="color:#0f3460; text-decoration:none;">Studi 40 tahun: FCF Yield ↗</a>
+            </td>
+          </tr>
+          <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:8px 10px;"><strong>Revenue Growth</strong></td>
+            <td style="padding:8px 10px; color:#555;">Pertumbuhan pendapatan year-over-year. Penting untuk memastikan saham yang tampak murah bukan karena bisnisnya sedang menyusut (value trap).</td>
+            <td style="padding:8px 10px; color:#4CAF50;">&gt; 5% YoY</td>
+            <td style="padding:8px 10px;">
+              <a href="https://www.investopedia.com/terms/r/revenue.asp" style="color:#0f3460; text-decoration:none;">Investopedia: Revenue ↗</a><br>
+              <a href="https://id.investing.com/analysis/fokus-pada-pbv-dan-pe-hatihati-terjebak-value-trap-200249215" style="color:#0f3460; text-decoration:none;">Menghindari Value Trap ↗</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <div class="disclaimer">
       ⚠️ <strong>Disclaimer:</strong> Rekomendasi ini dibuat secara otomatis berdasarkan data
       fundamental publik dan bukan merupakan saran investasi resmi. Lakukan riset mandiri
