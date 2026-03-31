@@ -328,7 +328,156 @@ def fmt(val, decimals=2, suffix=""):
     return f"{val:.{decimals}f}{suffix}"
 
 
+def generate_top3_analysis(top10: pd.DataFrame) -> str:
+    """
+    Generate penjelasan dinamis mengapa top 3 saham dianggap undervalued,
+    berdasarkan nilai metrik masing-masing dibandingkan benchmark IDX.
+    """
+    # Benchmark rata-rata pasar IDX (berdasarkan riset IDX Summary Financial Ratio)
+    MARKET_PE   = 16.0
+    MARKET_PB   = 2.0
+    MARKET_ROE  = 12.0
+
+    # Benchmark per sektor (P/E, P/B, ROE minimum sehat)
+    SECTOR_BENCH = {
+        "Financial Services": {"pe": 14, "pb": 1.5, "roe": 15},
+        "Basic Materials":    {"pe": 10, "pb": 1.2, "roe": 10},
+        "Consumer Defensive": {"pe": 22, "pb": 3.0, "roe": 18},
+        "Consumer Cyclical":  {"pe": 18, "pb": 2.0, "roe": 13},
+        "Industrials":        {"pe": 15, "pb": 1.5, "roe": 12},
+        "Energy":             {"pe": 10, "pb": 1.2, "roe": 10},
+        "Technology":         {"pe": 20, "pb": 2.5, "roe": 15},
+        "Communication Services": {"pe": 16, "pb": 2.0, "roe": 12},
+        "Utilities":          {"pe": 14, "pb": 1.3, "roe": 10},
+        "Real Estate":        {"pe": 14, "pb": 1.0, "roe":  8},
+        "Healthcare":         {"pe": 25, "pb": 3.0, "roe": 18},
+    }
+
+    medal = ["🥇", "🥈", "🥉"]
+    cards = ""
+
+    for i, (_, row) in enumerate(top10.head(3).iterrows()):
+        symbol  = row["symbol"]
+        company = str(row["company"])[:45]
+        sector  = str(row.get("sector", "")) or "N/A"
+        is_bank = bool(row["is_bank"])
+
+        bench = SECTOR_BENCH.get(sector, {"pe": MARKET_PE, "pb": MARKET_PB, "roe": MARKET_ROE})
+
+        reasons = []
+
+        # --- P/E ---
+        pe = row.get("pe_ratio")
+        if pe and not math.isnan(pe):
+            disc = ((bench["pe"] - pe) / bench["pe"]) * 100
+            if disc > 20:
+                reasons.append(
+                    f"<li><strong>P/E {pe:.1f}x</strong> — {disc:.0f}% di bawah rata-rata sektor "
+                    f"({bench['pe']:.0f}x). Harga murah relatif terhadap laba perusahaan.</li>"
+                )
+
+        # --- P/B ---
+        pb = row.get("pb_ratio")
+        if pb and not math.isnan(pb):
+            disc = ((bench["pb"] - pb) / bench["pb"]) * 100
+            if disc > 15:
+                reasons.append(
+                    f"<li><strong>P/B {pb:.2f}x</strong> — diperdagangkan {disc:.0f}% di bawah "
+                    f"benchmark sektor ({bench['pb']:.1f}x). Aset bersih perusahaan belum "
+                    f"sepenuhnya tercermin di harga pasar.</li>"
+                )
+
+        # --- ROE ---
+        roe = row.get("roe_pct")
+        if roe and not math.isnan(roe):
+            if roe >= bench["roe"] * 1.2:
+                reasons.append(
+                    f"<li><strong>ROE {roe:.1f}%</strong> — {roe/bench['roe']:.1f}x di atas "
+                    f"rata-rata sektor ({bench['roe']:.0f}%). Manajemen sangat efisien "
+                    f"menghasilkan laba dari ekuitas pemegang saham.</li>"
+                )
+            elif roe >= bench["roe"]:
+                reasons.append(
+                    f"<li><strong>ROE {roe:.1f}%</strong> — di atas rata-rata sektor "
+                    f"({bench['roe']:.0f}%), menunjukkan profitabilitas yang solid.</li>"
+                )
+
+        # --- EV/EBITDA (non-bank) ---
+        ev = row.get("ev_ebitda")
+        if not is_bank and ev and not math.isnan(ev) and ev > 0:
+            if ev < 8:
+                reasons.append(
+                    f"<li><strong>EV/EBITDA {ev:.1f}x</strong> — di bawah 8x menandakan valuasi "
+                    f"murah saat dibandingkan dengan nilai operasional bisnis (enterprise value). "
+                    f"Metrik ini tidak terpengaruh struktur utang maupun pajak.</li>"
+                )
+
+        # --- FCF Yield ---
+        fcf = row.get("fcf_yield_pct")
+        if fcf and not math.isnan(fcf) and fcf > 3:
+            reasons.append(
+                f"<li><strong>FCF Yield {fcf:.1f}%</strong> — arus kas bebas positif dan kuat "
+                f"({fcf:.1f}% dari market cap). Laba yang dilaporkan didukung oleh kas nyata, "
+                f"bukan hanya angka akuntansi.</li>"
+            )
+
+        # --- Revenue Growth ---
+        rg = row.get("rev_growth_pct")
+        if rg and not math.isnan(rg):
+            if rg >= 15:
+                reasons.append(
+                    f"<li><strong>Revenue Growth {rg:.1f}%</strong> — pertumbuhan pendapatan "
+                    f"tinggi mengindikasikan momentum bisnis yang kuat. Valuasi murah + "
+                    f"pertumbuhan = peluang menarik.</li>"
+                )
+            elif rg >= 5:
+                reasons.append(
+                    f"<li><strong>Revenue Growth {rg:.1f}%</strong> — pertumbuhan pendapatan "
+                    f"stabil, memastikan ini bukan value trap akibat bisnis yang menyusut.</li>"
+                )
+
+        # --- D/E (non-bank) ---
+        de = row.get("de_ratio")
+        if not is_bank and de is not None and not math.isnan(de) and de < 0.4:
+            reasons.append(
+                f"<li><strong>D/E {de:.2f}x</strong> — utang sangat rendah, memberikan ruang "
+                f"finansial untuk ekspansi atau bertahan di kondisi ekonomi sulit.</li>"
+            )
+
+        # Fallback jika tidak ada alasan spesifik
+        if not reasons:
+            reasons.append(
+                f"<li>Kombinasi P/E, P/B, ROE, dan metrik lainnya menempatkan saham ini "
+                f"di antara yang paling undervalued secara composite score di LQ45.</li>"
+            )
+
+        cards += f"""
+        <div style="border:1px solid #e0e0e0; border-radius:10px; padding:18px 20px;
+                    margin-bottom:14px; background:#fff; border-left: 5px solid
+                    {'#FFD700' if i==0 else '#C0C0C0' if i==1 else '#CD7F32'};">
+          <div style="display:flex; align-items:center; margin-bottom:10px;">
+            <span style="font-size:22px; margin-right:10px;">{medal[i]}</span>
+            <div>
+              <strong style="font-size:16px; color:#1a1a2e;">#{i+1} {symbol}</strong>
+              <span style="font-size:12px; color:#888; margin-left:8px;">Score: {fmt(row['composite_score'], 1)}</span><br>
+              <span style="font-size:12px; color:#555;">{company}</span>
+              <span style="font-size:11px; color:#888; margin-left:6px;">| {sector}</span>
+            </div>
+          </div>
+          <p style="margin:0 0 8px; font-size:12px; color:#555; font-style:italic;">
+            Mengapa saham ini undervalued?
+          </p>
+          <ul style="margin:0; padding-left:18px; font-size:13px; color:#333; line-height:1.8;">
+            {''.join(reasons)}
+          </ul>
+        </div>"""
+
+    return cards
+
+
 def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
+    top3_cards = generate_top3_analysis(top10)
+
     rank_colors = [
         "#FFD700", "#C0C0C0", "#CD7F32",
         "#4CAF50", "#4CAF50", "#4CAF50",
@@ -449,6 +598,15 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
         {rows}
       </tbody>
     </table>
+
+    <div style="margin-top:28px;">
+      <h2 style="font-size:16px; color:#1a1a2e; margin-bottom:14px; padding-bottom:8px;
+                  border-bottom:2px solid #f0f0f0;">
+        🔍 Analisis Top 3 — Mengapa Saham Ini Undervalued?
+      </h2>
+      {top3_cards}
+    </div>
+
     <div class="disclaimer">
       ⚠️ <strong>Disclaimer:</strong> Rekomendasi ini dibuat secara otomatis berdasarkan data
       fundamental publik dan bukan merupakan saran investasi resmi. Lakukan riset mandiri
