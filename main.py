@@ -418,16 +418,14 @@ def get_gmail_service():
     1. Env var GMAIL_TOKEN_JSON (GitHub Actions secrets)
     2. File token.json (lokal)
     """
-    SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
-
     # --- Coba dari environment variable (GitHub Actions) ---
     token_json_str = os.environ.get("GMAIL_TOKEN_JSON")
     if token_json_str:
-        creds = Credentials.from_authorized_user_info(
-            json.loads(token_json_str), scopes=SCOPES
-        )
+        # Jangan pass scopes= agar tidak trigger validasi ketat;
+        # scopes sudah tertanam di dalam token saat setup_gmail.py dijalankan.
+        creds = Credentials.from_authorized_user_info(json.loads(token_json_str))
     elif os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, scopes=SCOPES)
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE)
     else:
         raise FileNotFoundError(
             "Credentials tidak ditemukan.\n"
