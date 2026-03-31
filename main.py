@@ -28,9 +28,13 @@ from googleapiclient.discovery import build
 # Konfigurasi
 # ---------------------------------------------------------------------------
 
-# Email tujuan — ubah sesuai kebutuhan
+# Email tujuan — bisa satu atau beberapa, dipisah koma
+# Contoh: "a@gmail.com,b@gmail.com,c@gmail.com"
 RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "your_email@gmail.com")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_email@gmail.com")
+
+# Parse jadi list, strip spasi di tiap alamat
+RECIPIENT_LIST = [e.strip() for e in RECIPIENT_EMAIL.split(",") if e.strip()]
 
 # File token OAuth
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.json")
@@ -458,12 +462,12 @@ def send_email(subject: str, html_body: str) -> bool:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = SENDER_EMAIL
-        msg["To"] = RECIPIENT_EMAIL
+        msg["To"] = ", ".join(RECIPIENT_LIST)
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
-        log.info(f"Email berhasil dikirim ke {RECIPIENT_EMAIL}")
+        log.info(f"Email berhasil dikirim ke: {', '.join(RECIPIENT_LIST)}")
         return True
     except Exception as e:
         log.error(f"Gagal mengirim email: {e}")
