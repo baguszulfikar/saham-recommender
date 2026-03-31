@@ -32,22 +32,43 @@ from googleapiclient.discovery import build
 # Contoh: "a@gmail.com,b@gmail.com,c@gmail.com"
 RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "your_email@gmail.com")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_email@gmail.com")
-
-# Parse jadi list, strip spasi di tiap alamat
 RECIPIENT_LIST = [e.strip() for e in RECIPIENT_EMAIL.split(",") if e.strip()]
 
-# File token OAuth
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.json")
 CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "credentials.json")
 
-# Bobot scoring (total harus = 1.0)
-# P/E rendah = bagus, P/B rendah = bagus, ROE tinggi = bagus, D/E rendah = bagus
-WEIGHTS = {
-    "pe_score": 0.35,
-    "pb_score": 0.30,
-    "roe_score": 0.20,
-    "de_score": 0.15,
+# ---------------------------------------------------------------------------
+# Bobot scoring — berbeda untuk bank vs non-bank
+#
+# Referensi riset:
+#   - FCF Yield: 40-year study, top predictor of returns (Quant Investing)
+#   - EV/EBITDA: lebih robust dari P/E untuk perusahaan dengan leverage berbeda
+#   - D/E tidak relevan untuk bank (leverage by nature); ROE lebih representatif
+#   - Sumber: IFG Progress IDX 2024, IDX Summary Financial Ratio by Industry
+# ---------------------------------------------------------------------------
+
+WEIGHTS_NONBANK = {
+    "pe_score":             0.20,
+    "pb_score":             0.15,
+    "roe_score":            0.20,
+    "de_score":             0.10,
+    "ev_ebitda_score":      0.15,
+    "fcf_yield_score":      0.10,
+    "revenue_growth_score": 0.10,
 }
+
+WEIGHTS_BANK = {
+    "pe_score":             0.20,
+    "pb_score":             0.25,  # P/B sangat relevan untuk bank
+    "roe_score":            0.30,  # ROE adalah metrik utama bank
+    "de_score":             0.00,  # tidak relevan untuk bank
+    "ev_ebitda_score":      0.00,  # tidak relevan untuk bank
+    "fcf_yield_score":      0.10,
+    "revenue_growth_score": 0.15,
+}
+
+# Simbol bank dalam LQ45 — D/E dan EV/EBITDA di-skip untuk kelompok ini
+BANK_SYMBOLS = {"BBCA", "BBNI", "BBRI", "BBTN", "BMRI", "BRIS", "BTPS"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,14 +95,10 @@ LQ45_SYMBOLS = [
 ]
 
 # ---------------------------------------------------------------------------
-# 1. Ambil data LQ45 dari IDX API (harga & info dasar)
+# 1. Ambil harga dari IDX API (fallback ke yfinance)
 # ---------------------------------------------------------------------------
 
 def fetch_idx_prices() -> dict:
-    """
-    Ambil snapshot harga saham dari IDX API resmi.
-    Returns dict: {symbol: {"close": float, "volume": int, "change_pct": float}}
-    """
     url = "https://www.idx.co.id/primary/StockData/GetAllStockSnapshot"
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SahamRecommender/1.0)",
@@ -90,10 +107,7 @@ def fetch_idx_prices() -> dict:
     try:
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
-
-        # Struktur respons IDX: {"data": {"summaries": [...]}}
-        summaries = data.get("data", {}).get("summaries", [])
+        summaries = resp.json().get("data", {}).get("summaries", [])
         prices = {}
         for item in summaries:
             code = item.get("StockCode", "").strip()
@@ -111,14 +125,16 @@ def fetch_idx_prices() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 2. Ambil data finansial dari yfinance (.JK suffix untuk IDX)
+# 2. Ambil data finansial dari yfinance
+#
+# Metrik baru vs versi sebelumnya:
+#   + EV/EBITDA       : lebih robust dari P/E, netral terhadap struktur modal
+#   + FCF Yield       : Free Cash Flow / Market Cap, prediktor return jangka panjang
+#   + Revenue Growth  : pertumbuhan pendapatan YoY, filter value trap
+#   + Current Ratio   : likuiditas jangka pendek, filter risiko kebangkrutan
 # ---------------------------------------------------------------------------
 
 def fetch_financial_data(symbols: list) -> pd.DataFrame:
-    """
-    Ambil P/E, P/B, ROE, Debt/Equity dari yfinance untuk saham IDX.
-    yfinance menggunakan suffix .JK untuk Bursa Efek Indonesia.
-    """
     idx_prices = fetch_idx_prices()
     records = []
 
@@ -129,7 +145,7 @@ def fetch_financial_data(symbols: list) -> pd.DataFrame:
             ticker = yf.Ticker(ticker_code)
             info = ticker.info
 
-            # Ambil harga: utamakan dari IDX API, fallback ke yfinance
+            # Harga: utamakan IDX API, fallback ke yfinance
             if symbol in idx_prices and idx_prices[symbol]["close"] > 0:
                 close_price = idx_prices[symbol]["close"]
                 volume = idx_prices[symbol].get("volume", 0)
@@ -139,59 +155,65 @@ def fetch_financial_data(symbols: list) -> pd.DataFrame:
                 volume = info.get("regularMarketVolume", 0)
                 change_pct = info.get("regularMarketChangePercent", 0)
 
-            pe_ratio = info.get("trailingPE") or info.get("forwardPE")
-            pb_ratio = info.get("priceToBook")
-            roe = info.get("returnOnEquity")          # desimal, misal 0.18 = 18%
-            debt_to_equity = info.get("debtToEquity")  # dalam %, misal 50.0 = D/E 0.5
-            market_cap = info.get("marketCap", 0)
-            sector = info.get("sector", "")
-            company_name = info.get("longName") or info.get("shortName", symbol)
-            dividend_yield = info.get("dividendYield") or 0  # desimal (0.05 = 5%)
-            # yfinance kadang mengembalikan sudah dalam % (misal 5.0 bukan 0.05) → normalisasi
-            if dividend_yield > 1:
+            # Metrik dasar
+            pe_ratio        = info.get("trailingPE") or info.get("forwardPE")
+            pb_ratio        = info.get("priceToBook")
+            roe             = info.get("returnOnEquity")       # desimal: 0.18 = 18%
+            debt_to_equity  = info.get("debtToEquity")         # dalam %, 50.0 = D/E 0.5
+            market_cap      = info.get("marketCap", 0)
+            sector          = info.get("sector", "")
+            company_name    = info.get("longName") or info.get("shortName", symbol)
+
+            dividend_yield  = info.get("dividendYield") or 0
+            if dividend_yield > 1:                              # normalisasi jika sudah dalam %
                 dividend_yield = dividend_yield / 100
 
-            # Normalisasi
-            if roe is not None:
-                roe_pct = roe * 100
-            else:
-                roe_pct = None
+            # Metrik baru
+            ev_ebitda       = info.get("enterpriseToEbitda")   # EV/EBITDA ratio
+            free_cash_flow  = info.get("freeCashflow")         # absolut (IDR)
+            revenue_growth  = info.get("revenueGrowth")        # YoY desimal: 0.05 = 5%
+            current_ratio   = info.get("currentRatio")
 
-            if debt_to_equity is not None:
-                # yfinance mengembalikan dalam %, bagi 100 untuk rasio
-                de_ratio = debt_to_equity / 100
+            # Normalisasi
+            roe_pct     = roe * 100 if roe is not None else None
+            de_ratio    = debt_to_equity / 100 if debt_to_equity is not None else None
+            rev_growth  = revenue_growth * 100 if revenue_growth is not None else None  # dalam %
+
+            # FCF Yield = FCF / Market Cap (dalam %)
+            if free_cash_flow and market_cap and market_cap > 0:
+                fcf_yield_pct = (free_cash_flow / market_cap) * 100
             else:
-                de_ratio = None
+                fcf_yield_pct = None
 
             records.append({
-                "symbol": symbol,
-                "company": company_name,
-                "sector": sector,
-                "price": close_price,
-                "volume": volume,
-                "change_pct": change_pct,
-                "pe_ratio": pe_ratio,
-                "pb_ratio": pb_ratio,
-                "roe_pct": roe_pct,
-                "de_ratio": de_ratio,
-                "market_cap": market_cap,
+                "symbol":           symbol,
+                "company":          company_name,
+                "sector":           sector,
+                "is_bank":          symbol in BANK_SYMBOLS,
+                "price":            close_price,
+                "volume":           volume,
+                "change_pct":       change_pct,
+                "pe_ratio":         pe_ratio,
+                "pb_ratio":         pb_ratio,
+                "roe_pct":          roe_pct,
+                "de_ratio":         de_ratio,
+                "ev_ebitda":        ev_ebitda,
+                "fcf_yield_pct":    fcf_yield_pct,
+                "rev_growth_pct":   rev_growth,
+                "current_ratio":    current_ratio,
+                "market_cap":       market_cap,
                 "dividend_yield_pct": round(dividend_yield * 100, 2) if dividend_yield else 0,
             })
         except Exception as e:
             log.warning(f"Gagal mengambil data {ticker_code}: {e}")
             records.append({
-                "symbol": symbol,
-                "company": symbol,
-                "sector": "",
-                "price": 0,
-                "volume": 0,
-                "change_pct": 0,
-                "pe_ratio": None,
-                "pb_ratio": None,
-                "roe_pct": None,
-                "de_ratio": None,
-                "market_cap": 0,
-                "dividend_yield_pct": 0,
+                "symbol": symbol, "company": symbol, "sector": "",
+                "is_bank": symbol in BANK_SYMBOLS,
+                "price": 0, "volume": 0, "change_pct": 0,
+                "pe_ratio": None, "pb_ratio": None, "roe_pct": None,
+                "de_ratio": None, "ev_ebitda": None, "fcf_yield_pct": None,
+                "rev_growth_pct": None, "current_ratio": None,
+                "market_cap": 0, "dividend_yield_pct": 0,
             })
 
     return pd.DataFrame(records)
@@ -199,65 +221,81 @@ def fetch_financial_data(symbols: list) -> pd.DataFrame:
 
 # ---------------------------------------------------------------------------
 # 3. Scoring & ranking
+#
+# Metodologi (berbasis riset):
+#   - Rank-based scoring (0-100) agar semua metrik sebanding skalanya
+#   - Scoring terpisah: bank vs non-bank (bobot & filter berbeda)
+#   - Value trap guard: filter saham yang terlihat murah tapi fundamental lemah
 # ---------------------------------------------------------------------------
 
 def score_stocks(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Hitung composite score untuk menemukan saham undervalued.
-
-    Metodologi:
-    - P/E score  : semakin rendah P/E, semakin tinggi skor (inverted rank)
-    - P/B score  : semakin rendah P/B, semakin tinggi skor (inverted rank)
-    - ROE score  : semakin tinggi ROE, semakin tinggi skor
-    - D/E score  : semakin rendah D/E, semakin tinggi skor (inverted rank)
-
-    Filter: hapus saham dengan nilai negatif (rugi) atau data tidak lengkap.
-    """
     df = df.copy()
 
-    # Filter saham dengan data finansial tidak valid
+    # --- Filter outlier & data tidak valid ---
+    # P/E dan P/B: hapus yang negatif, nol, atau outlier ekstrem
     df = df[
         df["pe_ratio"].notna() & (df["pe_ratio"] > 0) & (df["pe_ratio"] < 200) &
-        df["pb_ratio"].notna() & (df["pb_ratio"] > 0) & (df["pb_ratio"] < 50) &
-        df["roe_pct"].notna() & (df["roe_pct"] > 0) &
-        df["de_ratio"].notna() & (df["de_ratio"] >= 0) &
-        (df["price"] > 0)
+        df["pb_ratio"].notna() & (df["pb_ratio"] > 0) & (df["pb_ratio"] < 50)  &
+        df["roe_pct"].notna()  & (df["price"] > 0)
+    ].copy()
+
+    # --- Value Trap Guard ---
+    # 1. ROE minimum: bank >= 8%, non-bank >= 8%
+    #    ROE rendah + harga murah = klasik value trap
+    df = df[df["roe_pct"] >= 8].copy()
+
+    # 2. Current Ratio: non-bank harus >= 0.8 (likuiditas minimum)
+    #    Bank di-skip karena current ratio tidak relevan untuk lembaga keuangan
+    nonbank_mask = ~df["is_bank"]
+    cr_available = df["current_ratio"].notna()
+    df = df[
+        df["is_bank"] |                                          # bank: lewatkan filter CR
+        ~cr_available |                                          # data tidak ada: lewatkan
+        (nonbank_mask & cr_available & (df["current_ratio"] >= 0.8))
+    ].copy()
+
+    # 3. Revenue growth: buang saham yang pendapatannya anjlok > 15% YoY
+    rg_available = df["rev_growth_pct"].notna()
+    df = df[
+        ~rg_available |                                          # data tidak ada: lewatkan
+        (df["rev_growth_pct"] >= -15)
     ].copy()
 
     if df.empty:
-        log.error("Tidak ada data valid untuk di-score!")
+        log.error("Tidak ada data valid setelah filter value trap!")
         return df
 
-    n = len(df)
+    log.info(f"Saham lolos semua filter: {len(df)}")
 
     def rank_score(series, lower_is_better=True):
         """
-        Ubah nilai menjadi skor 0-100 berdasarkan rank.
-        lower_is_better=True  → nilai kecil dapat skor tinggi (P/E, P/B, D/E)
-        lower_is_better=False → nilai besar dapat skor tinggi (ROE)
+        Konversi nilai ke skor 0-100 berdasarkan ranking relatif.
+        lower_is_better=True  → nilai kecil dapat skor tinggi (P/E, P/B, D/E, EV/EBITDA)
+        lower_is_better=False → nilai besar dapat skor tinggi (ROE, FCF Yield, Rev Growth)
         """
-        # ascending=False → nilai terbesar dapat rank 1 (terendah), nilai terkecil rank N (tertinggi)
-        # Jadi untuk lower_is_better: kita rank ascending=False agar nilai kecil dapat rank N → skor tinggi
-        ranked = series.rank(ascending=not lower_is_better, method="min")
-        return (ranked / n * 100).clip(0, 100)
+        valid = series.notna()
+        scores = pd.Series(50.0, index=series.index)  # default 50 jika data tidak ada
+        if valid.sum() > 1:
+            n = valid.sum()
+            ranked = series[valid].rank(ascending=not lower_is_better, method="min")
+            scores[valid] = (ranked / n * 100).clip(0, 100)
+        return scores
 
-    # P/E: rendah = bagus → nilai kecil dapat skor tinggi
-    df["pe_score"] = rank_score(df["pe_ratio"], lower_is_better=True)
-    # P/B: rendah = bagus → nilai kecil dapat skor tinggi
-    df["pb_score"] = rank_score(df["pb_ratio"], lower_is_better=True)
-    # ROE: tinggi = bagus → nilai besar dapat skor tinggi
-    df["roe_score"] = rank_score(df["roe_pct"], lower_is_better=False)
-    # D/E: rendah = bagus → nilai kecil dapat skor tinggi
-    df["de_score"] = rank_score(df["de_ratio"], lower_is_better=True)
+    # --- Hitung skor per metrik ---
+    df["pe_score"]             = rank_score(df["pe_ratio"],       lower_is_better=True)
+    df["pb_score"]             = rank_score(df["pb_ratio"],       lower_is_better=True)
+    df["roe_score"]            = rank_score(df["roe_pct"],        lower_is_better=False)
+    df["de_score"]             = rank_score(df["de_ratio"],       lower_is_better=True)
+    df["ev_ebitda_score"]      = rank_score(df["ev_ebitda"],      lower_is_better=True)
+    df["fcf_yield_score"]      = rank_score(df["fcf_yield_pct"],  lower_is_better=False)
+    df["revenue_growth_score"] = rank_score(df["rev_growth_pct"], lower_is_better=False)
 
-    # Composite score
-    df["composite_score"] = (
-        df["pe_score"] * WEIGHTS["pe_score"] +
-        df["pb_score"] * WEIGHTS["pb_score"] +
-        df["roe_score"] * WEIGHTS["roe_score"] +
-        df["de_score"] * WEIGHTS["de_score"]
-    )
+    # --- Composite score: bobot berbeda untuk bank vs non-bank ---
+    def apply_weights(row):
+        w = WEIGHTS_BANK if row["is_bank"] else WEIGHTS_NONBANK
+        return sum(row[metric] * weight for metric, weight in w.items())
 
+    df["composite_score"] = df.apply(apply_weights, axis=1)
     df = df.sort_values("composite_score", ascending=False).reset_index(drop=True)
     df["rank"] = df.index + 1
 
@@ -269,7 +307,6 @@ def score_stocks(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def format_currency(val, prefix="Rp "):
-    """Format angka ke ribuan dengan titik."""
     if val is None or (isinstance(val, float) and math.isnan(val)):
         return "-"
     return f"{prefix}{val:,.0f}".replace(",", ".")
@@ -292,11 +329,10 @@ def fmt(val, decimals=2, suffix=""):
 
 
 def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
-    # Warna gradient untuk ranking
     rank_colors = [
-        "#FFD700", "#C0C0C0", "#CD7F32",  # Gold, Silver, Bronze
-        "#4CAF50", "#4CAF50", "#4CAF50",  # Hijau
-        "#2196F3", "#2196F3", "#2196F3", "#2196F3",  # Biru
+        "#FFD700", "#C0C0C0", "#CD7F32",
+        "#4CAF50", "#4CAF50", "#4CAF50",
+        "#2196F3", "#2196F3", "#2196F3", "#2196F3",
     ]
 
     rows = ""
@@ -305,31 +341,41 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
         badge_color = rank_colors[rank - 1] if rank <= len(rank_colors) else "#9E9E9E"
         change_color = "#4CAF50" if row["change_pct"] >= 0 else "#F44336"
         change_sign = "+" if row["change_pct"] >= 0 else ""
+        bank_badge = ' <span style="font-size:10px;background:#E3F2FD;color:#1565C0;padding:1px 5px;border-radius:3px;">BANK</span>' if row["is_bank"] else ""
+
+        # FCF Yield: warna hijau jika positif
+        fcf_val = row.get("fcf_yield_pct")
+        fcf_color = "#4CAF50" if (fcf_val and fcf_val > 0) else "#F44336"
+
+        # Revenue growth: warna hijau jika positif
+        rg_val = row.get("rev_growth_pct")
+        rg_color = "#4CAF50" if (rg_val and rg_val >= 0) else "#F44336"
 
         rows += f"""
         <tr style="border-bottom: 1px solid #f0f0f0;">
-          <td style="padding: 12px 8px; text-align: center;">
+          <td style="padding: 10px 6px; text-align: center;">
             <span style="background:{badge_color}; color:{'#333' if rank <= 3 else '#fff'};
-                         padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 14px;">
+                         padding: 3px 8px; border-radius: 20px; font-weight: bold; font-size: 13px;">
               #{rank}
             </span>
           </td>
-          <td style="padding: 12px 8px;">
-            <strong style="font-size:15px; color:#1a1a2e;">{row['symbol']}</strong><br>
-            <span style="font-size:12px; color:#666;">{row['company'][:40]}</span>
+          <td style="padding: 10px 6px;">
+            <strong style="font-size:14px; color:#1a1a2e;">{row['symbol']}</strong>{bank_badge}<br>
+            <span style="font-size:11px; color:#666;">{str(row['company'])[:38]}</span>
           </td>
-          <td style="padding: 12px 8px; font-size:12px; color:#555;">{row['sector'][:25] or '-'}</td>
-          <td style="padding: 12px 8px; text-align: right;">
+          <td style="padding: 10px 6px; font-size:11px; color:#555;">{str(row['sector'])[:22] or '-'}</td>
+          <td style="padding: 10px 6px; text-align: right;">
             <strong>{format_currency(row['price'])}</strong><br>
-            <span style="color:{change_color}; font-size:12px;">{change_sign}{fmt(row['change_pct'], 2)}%</span>
+            <span style="color:{change_color}; font-size:11px;">{change_sign}{fmt(row['change_pct'], 2)}%</span>
           </td>
-          <td style="padding: 12px 8px; text-align: right; color:#333;">{fmt(row['pe_ratio'], 1)}x</td>
-          <td style="padding: 12px 8px; text-align: right; color:#333;">{fmt(row['pb_ratio'], 2)}x</td>
-          <td style="padding: 12px 8px; text-align: right; color:#4CAF50;">{fmt(row['roe_pct'], 1)}%</td>
-          <td style="padding: 12px 8px; text-align: right; color:#555;">{fmt(row['de_ratio'], 2)}x</td>
-          <td style="padding: 12px 8px; text-align: right; color:#2196F3;">{fmt(row['dividend_yield_pct'], 2)}%</td>
-          <td style="padding: 12px 8px; text-align: right; font-size:12px; color:#888;">{format_market_cap(row['market_cap'])}</td>
-          <td style="padding: 12px 8px; text-align: right;">
+          <td style="padding: 10px 6px; text-align: right; color:#333;">{fmt(row['pe_ratio'], 1)}x</td>
+          <td style="padding: 10px 6px; text-align: right; color:#333;">{fmt(row['pb_ratio'], 2)}x</td>
+          <td style="padding: 10px 6px; text-align: right; color:#4CAF50;">{fmt(row['roe_pct'], 1)}%</td>
+          <td style="padding: 10px 6px; text-align: right; color:#555;">{fmt(row['ev_ebitda'], 1)}x</td>
+          <td style="padding: 10px 6px; text-align: right; color:{fcf_color};">{fmt(fcf_val, 1)}%</td>
+          <td style="padding: 10px 6px; text-align: right; color:{rg_color};">{fmt(rg_val, 1)}%</td>
+          <td style="padding: 10px 6px; text-align: right; font-size:11px; color:#888;">{format_market_cap(row['market_cap'])}</td>
+          <td style="padding: 10px 6px; text-align: right;">
             <strong style="color:#1a1a2e;">{fmt(row['composite_score'], 1)}</strong>
           </td>
         </tr>"""
@@ -340,24 +386,27 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
   <meta charset="UTF-8">
   <style>
     body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f5f7fa; margin: 0; padding: 20px; }}
-    .container {{ max-width: 900px; margin: 0 auto; background: #fff; border-radius: 12px;
+    .container {{ max-width: 1000px; margin: 0 auto; background: #fff; border-radius: 12px;
                   box-shadow: 0 4px 20px rgba(0,0,0,0.08); overflow: hidden; }}
     .header {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-               padding: 30px 40px; color: #fff; }}
-    .header h1 {{ margin: 0; font-size: 24px; letter-spacing: 0.5px; }}
-    .header p {{ margin: 8px 0 0; opacity: 0.75; font-size: 14px; }}
-    .content {{ padding: 30px 20px; }}
+               padding: 28px 36px; color: #fff; }}
+    .header h1 {{ margin: 0; font-size: 22px; letter-spacing: 0.5px; }}
+    .header p {{ margin: 8px 0 0; opacity: 0.75; font-size: 13px; }}
+    .content {{ padding: 24px 16px; }}
     .methodology {{ background: #f8f9ff; border-left: 4px solid #0f3460;
-                    padding: 14px 18px; margin-bottom: 25px; border-radius: 0 8px 8px 0;
-                    font-size: 13px; color: #444; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+                    padding: 12px 16px; margin-bottom: 20px; border-radius: 0 8px 8px 0;
+                    font-size: 12px; color: #444; line-height: 1.6; }}
+    .filters {{ background: #fff3e0; border-left: 4px solid #FF9800;
+                padding: 10px 16px; margin-bottom: 20px; border-radius: 0 8px 8px 0;
+                font-size: 12px; color: #555; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
     thead tr {{ background: #1a1a2e; color: #fff; }}
-    thead th {{ padding: 12px 8px; text-align: center; font-weight: 600; font-size: 12px;
-                letter-spacing: 0.3px; }}
+    thead th {{ padding: 10px 6px; text-align: center; font-weight: 600; font-size: 11px;
+                letter-spacing: 0.3px; white-space: nowrap; }}
     tbody tr:hover {{ background: #f8f9ff; }}
-    .disclaimer {{ margin-top: 20px; padding: 14px; background: #fff8e1; border-radius: 8px;
-                   font-size: 12px; color: #795548; }}
-    .footer {{ text-align: center; padding: 20px; font-size: 12px; color: #999;
+    .disclaimer {{ margin-top: 18px; padding: 12px; background: #fff8e1; border-radius: 8px;
+                   font-size: 11px; color: #795548; }}
+    .footer {{ text-align: center; padding: 18px; font-size: 11px; color: #999;
                border-top: 1px solid #f0f0f0; }}
   </style>
 </head>
@@ -365,14 +414,19 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
 <div class="container">
   <div class="header">
     <h1>📊 Top 10 Saham LQ45 Undervalued</h1>
-    <p>Rekomendasi harian berdasarkan P/E, P/B, ROE, dan Debt/Equity &bull; {fetch_date}</p>
+    <p>Rekomendasi harian dengan 7 metrik fundamental &bull; {fetch_date}</p>
   </div>
   <div class="content">
     <div class="methodology">
-      <strong>Metodologi Scoring:</strong>
-      P/E Ratio (bobot 35%) + P/B Ratio (30%) + ROE (20%) + Debt/Equity (15%).
-      Saham dengan P/E &amp; P/B rendah, ROE tinggi, dan utang rendah mendapat skor tertinggi
-      sebagai indikator <em>undervalued</em> secara fundamental.
+      <strong>Metodologi Scoring (v2 — berbasis riset fundamental IDX):</strong><br>
+      <strong>Non-bank:</strong> P/E (20%) + P/B (15%) + ROE (20%) + D/E (10%) + EV/EBITDA (15%) + FCF Yield (10%) + Revenue Growth (10%)<br>
+      <strong>Bank:</strong> P/E (20%) + P/B (25%) + ROE (30%) + FCF Yield (10%) + Revenue Growth (15%)
+      &mdash; D/E &amp; EV/EBITDA tidak relevan untuk bank.
+    </div>
+    <div class="filters">
+      <strong>Value Trap Guard aktif:</strong>
+      ROE &lt; 8% dibuang &bull; Current Ratio &lt; 0.8 (non-bank) dibuang &bull;
+      Revenue Growth &lt; -15% dibuang &bull; P/E &gt; 200x atau P/B &gt; 50x dibuang sebagai outlier.
     </div>
     <table>
       <thead>
@@ -384,9 +438,10 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
           <th>P/E</th>
           <th>P/B</th>
           <th>ROE</th>
-          <th>D/E</th>
-          <th>Div. Yield</th>
-          <th>Mkt. Cap</th>
+          <th>EV/EBITDA</th>
+          <th>FCF Yield</th>
+          <th>Rev Growth</th>
+          <th>Mkt Cap</th>
           <th>Score</th>
         </tr>
       </thead>
@@ -397,12 +452,11 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
     <div class="disclaimer">
       ⚠️ <strong>Disclaimer:</strong> Rekomendasi ini dibuat secara otomatis berdasarkan data
       fundamental publik dan bukan merupakan saran investasi resmi. Lakukan riset mandiri
-      sebelum mengambil keputusan investasi. Data bersumber dari Yahoo Finance dan IDX.
+      sebelum mengambil keputusan investasi. Data bersumber dari Yahoo Finance (yfinance) dan IDX API.
     </div>
   </div>
   <div class="footer">
-    Saham Recommender &bull; Dihasilkan otomatis pada {fetch_date} &bull;
-    Data: Yahoo Finance (yfinance) + IDX API
+    Saham Recommender v2 &bull; {fetch_date} &bull; Data: yfinance + IDX API
   </div>
 </div>
 </body>
@@ -417,16 +471,10 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
 def get_gmail_service():
     """
     Buat Gmail API service dengan credentials OAuth.
-
-    Urutan lookup credentials:
-    1. Env var GMAIL_TOKEN_JSON (GitHub Actions secrets)
-    2. File token.json (lokal)
+    Urutan: env var GMAIL_TOKEN_JSON (GitHub Actions) → file token.json (lokal)
     """
-    # --- Coba dari environment variable (GitHub Actions) ---
     token_json_str = os.environ.get("GMAIL_TOKEN_JSON")
     if token_json_str:
-        # Jangan pass scopes= agar tidak trigger validasi ketat;
-        # scopes sudah tertanam di dalam token saat setup_gmail.py dijalankan.
         creds = Credentials.from_authorized_user_info(json.loads(token_json_str))
     elif os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE)
@@ -440,7 +488,6 @@ def get_gmail_service():
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            # Simpan token yang diperbarui (hanya jika berjalan lokal)
             if not token_json_str and os.path.exists(TOKEN_FILE):
                 with open(TOKEN_FILE, "w") as f:
                     f.write(creds.to_json())
@@ -455,16 +502,13 @@ def get_gmail_service():
 
 
 def send_email(subject: str, html_body: str) -> bool:
-    """Kirim email HTML via Gmail API."""
     try:
         service = get_gmail_service()
-
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = SENDER_EMAIL
         msg["To"] = ", ".join(RECIPIENT_LIST)
         msg.attach(MIMEText(html_body, "html", "utf-8"))
-
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
         log.info(f"Email berhasil dikirim ke: {', '.join(RECIPIENT_LIST)}")
@@ -480,45 +524,43 @@ def send_email(subject: str, html_body: str) -> bool:
 
 def main():
     today = datetime.now().strftime("%A, %d %B %Y")
-    log.info(f"=== Saham Recommender — {today} ===")
+    log.info(f"=== Saham Recommender v2 — {today} ===")
 
-    # Ambil data finansial semua saham LQ45
     log.info(f"Mengambil data untuk {len(LQ45_SYMBOLS)} saham LQ45...")
     df = fetch_financial_data(LQ45_SYMBOLS)
 
     if df.empty:
-        log.error("Tidak ada data yang berhasil diambil. Proses dihentikan.")
+        log.error("Tidak ada data yang berhasil diambil.")
         return
 
     log.info(f"Data berhasil diambil: {len(df)} saham")
 
-    # Scoring dan ranking
     scored = score_stocks(df)
     if scored.empty:
-        log.error("Scoring gagal — tidak ada saham dengan data lengkap.")
+        log.error("Scoring gagal — tidak ada saham yang lolos filter.")
         return
 
     top10 = scored.head(10)
-    log.info(f"Top 10 saham terpilih:\n{top10[['rank','symbol','pe_ratio','pb_ratio','roe_pct','de_ratio','composite_score']].to_string(index=False)}")
+    log.info(
+        f"Top 10 saham:\n"
+        f"{top10[['rank','symbol','pe_ratio','pb_ratio','roe_pct','ev_ebitda','fcf_yield_pct','rev_growth_pct','composite_score']].to_string(index=False)}"
+    )
 
-    # Buat HTML email
     fetch_date = datetime.now().strftime("%d %B %Y, %H:%M WIB")
     html = build_email_html(top10, fetch_date)
 
-    # Simpan HTML untuk preview (opsional)
     preview_path = os.path.join(os.path.dirname(__file__), "preview.html")
     with open(preview_path, "w", encoding="utf-8") as f:
         f.write(html)
-    log.info(f"Preview HTML disimpan di: {preview_path}")
+    log.info(f"Preview HTML: {preview_path}")
 
-    # Kirim email
     subject = f"📊 Top 10 Saham LQ45 Undervalued — {datetime.now().strftime('%d %b %Y')}"
     success = send_email(subject, html)
 
     if success:
         log.info("Selesai! Rekomendasi berhasil dikirim.")
     else:
-        log.error("Email gagal dikirim. Cek log di atas untuk detail.")
+        log.error("Email gagal dikirim.")
 
 
 if __name__ == "__main__":
