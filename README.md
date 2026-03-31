@@ -18,6 +18,48 @@ Skrip otomatis untuk mengambil data saham LQ45 Indonesia, menganalisis valuasi f
 | ROE | 20% | Tinggi = profitabilitas bagus |
 | Debt/Equity | 15% | Rendah = utang sehat |
 
+### Cara Perhitungan Score
+
+**Step 1 — Filter data tidak valid**
+
+Saham dibuang sebelum scoring jika:
+- P/E atau P/B ≤ 0 (perusahaan rugi)
+- P/E > 200 atau P/B > 50 (outlier / data error)
+- Ada data yang kosong atau harga = 0
+
+**Step 2 — Rank Score per Metrik (skala 0–100)**
+
+Setiap metrik diubah menjadi skor 0–100 berdasarkan **ranking relatif** antar saham yang lolos filter, bukan nilai absolutnya:
+
+```
+rank_score = (rank / jumlah_saham) × 100
+```
+
+| Metrik | Aturan | Contoh (dari 25 saham) |
+|--------|--------|------------------------|
+| P/E | Rendah = bagus → rank tertinggi = skor 100 | P/E 3.0x → rank 25 → skor ~100 |
+| P/B | Rendah = bagus → rank tertinggi = skor 100 | P/B 0.12x → rank 25 → skor ~100 |
+| ROE | Tinggi = bagus → rank tertinggi = skor 100 | ROE 23.4% → rank tertinggi |
+| D/E | Rendah = bagus → rank tertinggi = skor 100 | D/E 0.04x → skor ~96 |
+
+> Menggunakan ranking (bukan nilai absolut) karena P/E dan D/E punya skala berbeda — ranking membuat semua metrik sebanding di skala 0–100.
+
+**Step 3 — Composite Score**
+
+```
+Score = (PE_score × 35%) + (PB_score × 30%) + (ROE_score × 20%) + (DE_score × 15%)
+```
+
+Contoh perhitungan EMTK (score 74.6):
+
+| Metrik | Nilai | Skor | × Bobot | Kontribusi |
+|--------|-------|------|---------|-----------|
+| P/E | 6.25x | 80 | × 35% | 28.0 |
+| P/B | 1.24x | 64 | × 30% | 19.2 |
+| ROE | 19.1% | 88 | × 20% | 17.6 |
+| D/E | 0.04x | 96 | × 15% | 14.4 |
+| **Total** | | | | **79.2** |
+
 ---
 
 ## Setup
