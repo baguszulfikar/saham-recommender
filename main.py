@@ -411,29 +411,43 @@ def build_email_html(top10: pd.DataFrame, fetch_date: str) -> str:
 # ---------------------------------------------------------------------------
 
 def get_gmail_service():
-    """Buat Gmail API service dengan credentials OAuth."""
-    if not os.path.exists(CREDENTIALS_FILE):
-        raise FileNotFoundError(
-            f"File '{CREDENTIALS_FILE}' tidak ditemukan.\n"
-            "Jalankan 'python setup_gmail.py' untuk setup OAuth terlebih dahulu."
-        )
+    """
+    Buat Gmail API service dengan credentials OAuth.
 
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(
-            TOKEN_FILE, scopes=["https://www.googleapis.com/auth/gmail.send"]
+    Urutan lookup credentials:
+    1. Env var GMAIL_TOKEN_JSON (GitHub Actions secrets)
+    2. File token.json (lokal)
+    """
+    SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+    # --- Coba dari environment variable (GitHub Actions) ---
+    token_json_str = os.environ.get("GMAIL_TOKEN_JSON")
+    if token_json_str:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(token_json_str), scopes=SCOPES
+        )
+    elif os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, scopes=SCOPES)
+    else:
+        raise FileNotFoundError(
+            "Credentials tidak ditemukan.\n"
+            "Lokal: jalankan 'python setup_gmail.py'.\n"
+            "GitHub Actions: set secret GMAIL_TOKEN_JSON."
         )
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            # Simpan token yang diperbarui (hanya jika berjalan lokal)
+            if not token_json_str and os.path.exists(TOKEN_FILE):
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
         else:
             raise RuntimeError(
-                "Token OAuth tidak valid atau belum dibuat.\n"
-                "Jalankan 'python setup_gmail.py' untuk login ulang."
+                "Token OAuth tidak valid atau expired.\n"
+                "Lokal: jalankan 'python setup_gmail.py' untuk login ulang.\n"
+                "GitHub Actions: perbarui secret GMAIL_TOKEN_JSON."
             )
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
 
     return build("gmail", "v1", credentials=creds)
 

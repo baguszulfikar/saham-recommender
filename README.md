@@ -1,6 +1,6 @@
 # Saham Recommender
 
-Skrip otomatis untuk mengambil data saham LQ45 Indonesia, menganalisis valuasi fundamental, dan mengirimkan rekomendasi **Top 10 saham undervalued** via Gmail setiap hari kerja.
+Skrip otomatis untuk mengambil data saham LQ45 Indonesia, menganalisis valuasi fundamental, dan mengirimkan rekomendasi **Top 10 saham undervalued** via Gmail setiap hari kerja — dijalankan otomatis via **GitHub Actions**.
 
 ## Cara Kerja
 
@@ -20,87 +20,70 @@ Skrip otomatis untuk mengambil data saham LQ45 Indonesia, menganalisis valuasi f
 
 ---
 
-## Setup (Ikuti Urutan Ini)
+## Setup
 
-### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Setup Gmail API (SEKALI)
+### 1. Setup Gmail API (SEKALI, dari lokal)
 
 #### a. Buat Google Cloud Project & Enable Gmail API
 
 1. Buka [Google Cloud Console](https://console.cloud.google.com/)
-2. Buat project baru: **New Project** → beri nama misal `SahamRecommender`
-3. Klik **APIs & Services** → **Library**
-4. Cari `Gmail API` → klik **Enable**
+2. Buat project baru → beri nama misal `SahamRecommender`
+3. Klik **APIs & Services** → **Library** → cari `Gmail API` → **Enable**
 
 #### b. Buat OAuth Credentials
 
-1. Klik **APIs & Services** → **Credentials**
-2. Klik **+ Create Credentials** → **OAuth client ID**
-3. Jika diminta, konfigurasi **OAuth consent screen**:
-   - User Type: **External**
-   - App name: `Saham Recommender`
-   - Email: email Anda
-   - Klik **Save and Continue** (skip bagian lainnya)
+1. Klik **APIs & Services** → **Credentials** → **+ Create Credentials** → **OAuth client ID**
+2. Konfigurasi **OAuth consent screen** jika diminta:
+   - User Type: **External**, App name: `Saham Recommender`
    - Di tab **Test users**, tambahkan email Gmail Anda
-4. Kembali buat credentials: **Desktop app** → beri nama → **Create**
-5. Klik **Download JSON** → simpan sebagai `credentials.json` di folder ini
+3. Application type: **Desktop app** → **Create**
+4. Download JSON → simpan sebagai `credentials.json` di folder ini
 
-#### c. Jalankan Setup OAuth
+#### c. Generate Token (sekali saja)
 
 ```bash
+pip install -r requirements.txt
 python setup_gmail.py
 ```
 
-Browser akan terbuka, login dengan akun Gmail yang akan dipakai untuk mengirim email.
-Token akan disimpan otomatis sebagai `token.json`.
+Browser terbuka → login Gmail → `token.json` tersimpan otomatis.
 
-### 3. Konfigurasi Email
+---
 
-Edit `main.py` pada bagian ini:
+### 2. Setup GitHub Actions Secrets
 
-```python
-RECIPIENT_EMAIL = "email_tujuan@gmail.com"  # Email penerima rekomendasi
-SENDER_EMAIL    = "email_pengirim@gmail.com" # Email Gmail yang di-authorize
-```
+Buka repo ini di GitHub → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
-Atau set via environment variable:
+Tambahkan 4 secrets berikut:
+
+| Secret Name | Nilai |
+|-------------|-------|
+| `GMAIL_TOKEN_JSON` | Isi file `token.json` (copy-paste seluruh isinya) |
+| `GMAIL_CREDENTIALS_JSON` | Isi file `credentials.json` (copy-paste seluruh isinya) |
+| `SENDER_EMAIL` | Email Gmail yang di-authorize (pengirim) |
+| `RECIPIENT_EMAIL` | Email tujuan penerima rekomendasi |
+
+---
+
+### 3. Aktifkan GitHub Actions
+
+GitHub Actions workflow sudah ada di `.github/workflows/daily-recommender.yml`.
+
+Jadwal: **setiap hari kerja pukul 08:30 WIB** (01:30 UTC).
+
+Untuk test manual: buka tab **Actions** di GitHub → pilih workflow → klik **Run workflow**.
+
+---
+
+## Jalankan Lokal
 
 ```bash
-set RECIPIENT_EMAIL=email_tujuan@gmail.com
-set SENDER_EMAIL=email_pengirim@gmail.com
-```
-
-### 4. Test Jalankan Manual
-
-```bash
+pip install -r requirements.txt
+python setup_gmail.py   # sekali saja
 python main.py
 ```
 
-Cek folder untuk file `preview.html` (preview email tanpa perlu kirim).
-
-### 5. Setup Jadwal Otomatis (Hari Kerja 08:30)
-
-Klik kanan `scheduler.bat` → **Run as administrator**
-
-Untuk verifikasi:
-```cmd
-schtasks /query /tn "SahamRecommender"
-```
-
-Untuk test jalankan sekarang:
-```cmd
-schtasks /run /tn "SahamRecommender"
-```
-
-Untuk hapus jadwal:
-```cmd
-schtasks /delete /tn "SahamRecommender" /f
-```
+File `preview.html` akan dibuat sebagai preview email.
 
 ---
 
@@ -108,13 +91,15 @@ schtasks /delete /tn "SahamRecommender" /f
 
 ```
 saham-recommender/
-├── main.py           # Script utama
-├── setup_gmail.py    # Setup Gmail OAuth (jalankan sekali)
-├── requirements.txt  # Python dependencies
-├── scheduler.bat     # Setup Windows Task Scheduler
-├── credentials.json  # (buat sendiri dari Google Cloud Console)
-├── token.json        # (auto-generated setelah setup_gmail.py)
-└── preview.html      # (auto-generated setiap run — preview email)
+├── .github/
+│   └── workflows/
+│       └── daily-recommender.yml  # GitHub Actions schedule
+├── main.py                        # Script utama
+├── setup_gmail.py                 # Setup Gmail OAuth (jalankan lokal, sekali)
+├── requirements.txt               # Python dependencies
+├── credentials.json               # (buat sendiri — jangan di-commit)
+├── token.json                     # (auto-generated — jangan di-commit)
+└── preview.html                   # (auto-generated setiap run)
 ```
 
 ---
@@ -123,16 +108,16 @@ saham-recommender/
 
 | Problem | Solusi |
 |---------|--------|
-| `credentials.json not found` | Download dari Google Cloud Console (lihat step 2b) |
-| `Token OAuth tidak valid` | Jalankan ulang `python setup_gmail.py` |
+| `credentials.json not found` | Download dari Google Cloud Console (lihat step 1b) |
+| `Token OAuth tidak valid` | Jalankan ulang `python setup_gmail.py`, update secret `GMAIL_TOKEN_JSON` |
 | Data saham kosong/sedikit | Normal jika market tutup; yfinance bisa rate-limit |
-| Email tidak terkirim | Cek log error; pastikan akun Gmail di test users |
-| Task Scheduler gagal | Jalankan `scheduler.bat` sebagai Administrator |
+| Email tidak terkirim | Cek Actions log; pastikan email ada di OAuth consent test users |
+| GitHub Actions tidak jalan | Pastikan Actions diaktifkan di Settings repo |
 
 ---
 
 ## Catatan Penting
 
 - **LQ45 diperbarui** setiap Februari & Agustus oleh IDX. Update list `LQ45_SYMBOLS` di `main.py` sesuai konstituen terbaru.
-- Data finansial (P/E, P/B, dll.) bersumber dari Yahoo Finance dan bisa ada keterlambatan.
+- Data finansial bersumber dari Yahoo Finance dan bisa ada keterlambatan 1 hari.
 - Skrip ini hanya untuk **referensi riset**, bukan saran investasi resmi.
