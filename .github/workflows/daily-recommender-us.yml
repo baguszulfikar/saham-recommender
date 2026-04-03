@@ -1,10 +1,10 @@
-name: Daily Saham Recommender
+name: Daily US Stock Recommender
 
 on:
   schedule:
-    # Target 08:30 WIB = 01:30 UTC. GitHub Actions sering delay ~2.5 jam,
-    # jadi schedule 2.5 jam lebih awal: 23:00 UTC (hari sebelumnya) = 06:00 WIB
-    - cron: '0 23 * * 0-4'
+    # Target 17:00 ET (22:00 UTC). GitHub Actions sering delay ~2.5 jam,
+    # jadi schedule 2.5 jam lebih awal: 19:30 UTC = 14:30 ET (setelah market close 16:00 ET)
+    - cron: '30 19 * * 1-5'
   workflow_dispatch:  # bisa trigger manual dari GitHub UI
 
 jobs:
@@ -24,10 +24,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Saham Recommender
+      - name: Run US Stock Recommender
         env:
           GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
           GMAIL_CREDENTIALS_JSON: ${{ secrets.GMAIL_CREDENTIALS_JSON }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-        run: python main.py
+        run: python main_us.py
